@@ -1,0 +1,93 @@
+# Install required libraries
+!pip install opencv-python numpy vtk Pillow matplotlib -q
+
+import cv2
+import numpy as np
+import vtk
+from vtk.util.numpy_support import numpy_to_vtk
+from PIL import Image
+import matplotlib.pyplot as plt
+import os
+
+# Step 1: Upload and preprocess X-ray image
+from google.colab import files
+uploaded = files.upload()
+img_path = list(uploaded.keys())[0]  # Assumes first uploaded file is the X-ray
+
+def load_xray_image(img_path):
+    try:
+        img = cv2.imdecode(np.frombuffer(uploaded[img_path], np.uint8), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError("Failed to load image.")
+        print("Image loaded successfully.")
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+        print("Contrast enhanced with CLAHE.")
+        img_thresh = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                          cv2.THRESH_BINARY_INV, 11, 2)
+        print("Thresholding applied to highlight TB.")
+        return img, img_thresh
+    except Exception as e:
+        print(f"Error in image loading/preprocessing: {e}")
+        return None, None
+
+# Step 2: Create pseudo-3D depth map
+def create_depth_map(img):
+    if img is None:
+        return None
+    depth = 255 - img.astype(float)
+    depth = (depth - depth.min()) / (depth.max() - depth.min())
+    depth = depth * 150
+    print("Depth map created.")
+    return depth
+
+# Step 3: Generate 3D model using VTK
+def create_3d_model(depth_map):
+    if depth_map is None:
+        return None
+    h, w = depth_map.shape
+    points = vtk.vtkPoints()
+    vertices = vtk.vtkCellArray()
+    for i in range(h):
+        for j in range(w):
+            z = depth_map[i, j]
+            idx = points.InsertNextPoint(j, i, z)
+            vertex = vtk.vtkVertex()
+            vertex.GetPointIds().SetId(0, idx)
+            vertices.InsertNextCell(vertex)
+    polydata = vtk.vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetVerts(vertices)
+    delaunay = vtk.vtkDelaunay2D()
+    delaunay.SetInputData(polydata)
+    delaunay.Update()
+    print("3D model generated.")
+    return delaunay.GetOutput()
+
+# Step 4: Save 3D model as STL file
+def save_3d_model(polydata, filename="tb_3d_model.stl"):
+    if polydata is None:
+        print("No polydata to save.")
+        return
+    writer = vtk.vtkSTLWriter()
+    writer.SetInputData(polydata)
+    writer.SetFileName(filename)
+    writer.Write()
+    print(f"3D model saved as {filename}")
+    files.download(filename)  # Download the STL file
+
+# Main function
+def main():
+    img, img_thresh = load_xray_image(img_path)
+    if img is None:
+        return
+    depth_map = create_depth_map(img)
+    if depth_map is None:
+        return
+    model = create_3d_model(depth_map)
+    if model is None:
+        return
+    save_3d_model(model)
+
+if __name__ == "__main__":
+    main()
